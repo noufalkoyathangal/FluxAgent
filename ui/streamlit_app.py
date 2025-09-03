@@ -1,12 +1,9 @@
 """
-Main Streamlit application for the AI Agent interface.
+Simplified Streamlit application for the AI Agent interface.
 """
 import streamlit as st
-import httpx
+import requests
 import json
-import asyncio
-from typing import Dict, Any, Optional
-import time
 import uuid
 
 # Page configuration
@@ -45,230 +42,137 @@ st.markdown("""
         border-left: 4px solid #4caf50;
     }
     
-    .agent-status {
-        background-color: #fff3e0;
-        border: 1px solid #ff9800;
-        border-radius: 5px;
+    .status-indicator {
         padding: 0.5rem;
+        border-radius: 5px;
         margin: 0.5rem 0;
         font-size: 0.9rem;
     }
     
-    .tools-used {
-        background-color: #f3e5f5;
-        border-radius: 5px;
-        padding: 0.5rem;
-        margin: 0.5rem 0;
-        font-size: 0.8rem;
-    }
+    .connected { background-color: #e8f5e8; color: #2e7d32; }
+    .disconnected { background-color: #ffebee; color: #c62828; }
 </style>
 """, unsafe_allow_html=True)
 
 # Configuration
-API_BASE_URL = "http://localhost:8000/api/v1"
+API_BASE_URL = "http://localhost:8000"
 
-class AIAgentUI:
-    def __init__(self):
-        self.initialize_session_state()
+def initialize_session_state():
+    """Initialize session state variables."""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
     
-    def initialize_session_state(self):
-        """Initialize session state variables."""
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-        
-        if "conversation_id" not in st.session_state:
-            st.session_state.conversation_id = str(uuid.uuid4())
-        
-        if "user_id" not in st.session_state:
-            st.session_state.user_id = "streamlit_user"
-        
-        if "api_status" not in st.session_state:
-            st.session_state.api_status = None
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = str(uuid.uuid4())
     
-    def check_api_status(self) -> bool:
-        """Check if the FastAPI backend is running."""
-        try:
-            response = httpx.get(f"{API_BASE_URL.replace('/api/v1', '')}/health", timeout=5.0)
-            if response.status_code == 200:
-                st.session_state.api_status = "connected"
-                return True
-        except Exception:
-            pass
-        
-        st.session_state.api_status = "disconnected"
-        return False
+    if "api_status" not in st.session_state:
+        st.session_state.api_status = None
+
+def check_api_status():
+    """Check if the FastAPI backend is running."""
+    try:
+        response = requests.get(f"{API_BASE_URL}/health", timeout=5.0)
+        if response.status_code == 200:
+            return True, "Connected"
+    except Exception as e:
+        return False, f"Disconnected: {str(e)}"
     
-    def send_message(self, message: str, use_streaming: bool = False) -> Optional[Dict[str, Any]]:
-        """Send a message to the AI agent API."""
-        try:
-            if use_streaming:
-                return self.send_streaming_message(message)
-            else:
-                response = httpx.post(
-                    f"{API_BASE_URL}/chat",
-                    json={
-                        "message": message,
-                        "conversation_id": st.session_state.conversation_id,
-                        "user_id": st.session_state.user_id
-                    },
-                    timeout=60.0
-                )
-                
-                if response.status_code == 200:
-                    return response.json()
-                else:
-                    st.error(f"API Error: {response.status_code} - {response.text}")
-                    return None
+    return False, "Disconnected"
+
+def send_message_to_api(message: str):
+    """Send a message to the FastAPI backend."""
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/api/v1/chat",
+            json={
+                "message": message,
+                "conversation_id": st.session_state.conversation_id,
+                "user_id": "streamlit_user"
+            },
+            timeout=30.0
+        )
         
-        except Exception as e:
-            st.error(f"Connection error: {str(e)}")
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"API Error: {response.status_code} - {response.text}")
             return None
     
-    def send_streaming_message(self, message: str):
-        """Send a streaming message to the AI agent API."""
-        try:
-            with httpx.stream(
-                "POST",
-                f"{API_BASE_URL}/chat/stream",
-                json={
-                    "message": message,
-                    "conversation_id": st.session_state.conversation_id,
-                    "user_id": st.session_state.user_id,
-                    "stream_type": "all"
-                },
-                timeout=60.0
-            ) as response:
-                if response.status_code == 200:
-                    # Create a placeholder for streaming content
-                    placeholder = st.empty()
-                    full_response = ""
-                    
-                    for line in response.iter_lines():
-                        if line.startswith("data: "):
-                            try:
-                                data = json.loads(line[6:])  # Remove "data: " prefix
-                                
-                                if data.get("type") == "message":
-                                    content = data.get("content", "")
-                                    if content:
-                                        full_response = content
-                                        placeholder.markdown(f"**Assistant:** {full_response}")
-                                
-                                elif data.get("type") == "status":
-                                    status_content = data.get("content", "")
-                                    if status_content:
-                                        with st.container():
-                                            st.markdown(f'<div class="agent-status">🔄 {status_content}</div>', unsafe_allow_html=True)
-                                
-                                elif data.get("type") == "complete":
-                                    break
-                                
-                                elif data.get("type") == "error":
-                                    st.error(f"Agent Error: {data.get('content', 'Unknown error')}")
-                                    return None
-                            
-                            except json.JSONDecodeError:
-                                continue
-                    
-                    # Clear the placeholder and return the final response
-                    placeholder.empty()
-                    return {"response": full_response, "status": "completed"}
-                
-                else:
-                    st.error(f"Streaming API Error: {response.status_code}")
-                    return None
+    except Exception as e:
+        st.error(f"Connection error: {str(e)}")
+        return None
+
+def render_sidebar():
+    """Render the sidebar with configuration options."""
+    with st.sidebar:
+        st.header("🤖 AI Agent Settings")
         
-        except Exception as e:
-            st.error(f"Streaming error: {str(e)}")
-            return None
-    
-    def render_sidebar(self):
-        """Render the sidebar with configuration options."""
-        with st.sidebar:
-            st.header("🤖 AI Agent Settings")
-            
-            # API Status
-            api_connected = self.check_api_status()
-            status_color = "🟢" if api_connected else "🔴"
-            status_text = "Connected" if api_connected else "Disconnected"
-            st.markdown(f"**API Status:** {status_color} {status_text}")
-            
-            if not api_connected:
-                st.warning("FastAPI backend is not running. Please start the server first.")
-                if st.button("🔄 Refresh Status"):
-                    st.rerun()
-            
-            st.divider()
-            
-            # Conversation Settings
-            st.subheader("💬 Conversation")
-            
-            # Display current conversation ID
-            st.text(f"ID: {st.session_state.conversation_id[:8]}...")
-            
-            # New conversation button
-            if st.button("🆕 New Conversation"):
-                st.session_state.messages = []
-                st.session_state.conversation_id = str(uuid.uuid4())
-                st.rerun()
-            
-            # Clear history button
-            if st.button("🗑️ Clear History"):
-                st.session_state.messages = []
-                st.rerun()
-            
-            st.divider()
-            
-            # Agent Settings
-            st.subheader("⚙️ Agent Options")
-            
-            # Streaming toggle
-            use_streaming = st.checkbox("Enable Streaming", value=True, 
-                                      help="Show agent processing steps in real-time")
-            
-            # Model temperature (placeholder for future enhancement)
-            temperature = st.slider("Response Creativity", 0.0, 1.0, 0.1, 0.1,
-                                  help="Higher values make responses more creative")
-            
-            # Max tokens (placeholder for future enhancement)
-            max_tokens = st.slider("Max Response Length", 100, 4000, 2000, 100)
-            
-            st.divider()
-            
-            # Agent Information
-            st.subheader("ℹ️ About")
-            st.markdown("""
-            This AI Agent uses:
-            - **LangGraph** for workflow orchestration
-            - **Azure OpenAI** for language processing
-            - **FastAPI** for backend services
-            - **Streamlit** for the user interface
-            
-            The agent can:
-            - 🔍 Search the web for current information
-            - 🧠 Conduct research and analysis
-            - 💬 Maintain conversation context
-            - 🛠️ Use multiple specialized tools
-            """)
-            
-            return {
-                "use_streaming": use_streaming,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "api_connected": api_connected
-            }
-    
-    def render_chat_interface(self, settings: Dict[str, Any]):
-        """Render the main chat interface."""
-        # Header
-        st.markdown("""
-        <div class="main-header">
-            <h1>🤖 AI Agent Assistant</h1>
-            <p>Powered by LangGraph, Azure OpenAI & FastAPI</p>
+        # API Status
+        is_connected, status_msg = check_api_status()
+        status_color = "connected" if is_connected else "disconnected"
+        status_icon = "🟢" if is_connected else "🔴"
+        
+        st.markdown(f"""
+        <div class="status-indicator {status_color}">
+            {status_icon} <strong>API Status:</strong> {status_msg}
         </div>
         """, unsafe_allow_html=True)
         
-        # Display conversation messages
+        if not is_connected:
+            st.warning("⚠️ FastAPI backend is not running!")
+            st.info("💡 Start the backend with: `uvicorn app.api.main:app --reload`")
+            if st.button("🔄 Refresh Status"):
+                st.rerun()
+        
+        st.divider()
+        
+        # Conversation Settings
+        st.subheader("💬 Conversation")
+        
+        # Display current conversation ID
+        st.text(f"ID: {st.session_state.conversation_id[:8]}...")
+        
+        # New conversation button
+        if st.button("🆕 New Conversation"):
+            st.session_state.messages = []
+            st.session_state.conversation_id = str(uuid.uuid4())
+            st.rerun()
+        
+        # Clear history button
+        if st.button("🗑️ Clear History"):
+            st.session_state.messages = []
+            st.rerun()
+        
+        st.divider()
+        
+        # Instructions
+        st.subheader("ℹ️ How to Use")
+        st.markdown("""
+        1. **Start Backend**: Run `uvicorn app.api.main:app --reload`
+        2. **Type Message**: Enter your message in the chat input below
+        3. **Send**: Press Enter or click send
+        4. **View Response**: See the AI agent's response
+        
+        **Example Messages:**
+        - "Hello, how are you?"
+        - "What can you help me with?"
+        - "Tell me about AI agents"
+        """)
+        
+        return is_connected
+
+def render_chat_interface(api_connected):
+    """Render the main chat interface."""
+    # Header
+    st.markdown("""
+    <div class="main-header">
+        <h1>🤖 AI Agent Assistant</h1>
+        <p>Powered by LangGraph, Azure OpenAI & FastAPI</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Display conversation messages
+    if st.session_state.messages:
         for message in st.session_state.messages:
             if message["role"] == "user":
                 st.markdown(f"""
@@ -285,138 +189,119 @@ class AIAgentUI:
                     {message["content"]}
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # Show tools used if available
-                if "tools_used" in message and message["tools_used"]:
-                    tools_list = ", ".join(message["tools_used"])
-                    st.markdown(f"""
-                    <div class="tools-used">
-                        🛠️ <strong>Tools used:</strong> {tools_list}
-                    </div>
-                    """, unsafe_allow_html=True)
-        
-        # Chat input
-        if settings["api_connected"]:
-            # Use chat_input for better UX
-            if prompt := st.chat_input("Ask me anything..."):
-                self.handle_user_input(prompt, settings)
-        else:
-            st.error("⚠️ Cannot send messages. API backend is not available.")
-            st.info("💡 Please start the FastAPI server by running: `python -m uvicorn app.api.main:app --reload`")
+    else:
+        # Show welcome message when no conversation exists
+        st.markdown("""
+        <div class="chat-message assistant-message">
+            <strong>🤖 Assistant:</strong><br>
+            Welcome! I'm your AI Agent Assistant. Type a message below to get started.
+        </div>
+        """, unsafe_allow_html=True)
     
-    def handle_user_input(self, user_input: str, settings: Dict[str, Any]):
-        """Handle user input and get agent response."""
-        # Add user message to session state
+    # Chat input
+    if api_connected:
+        # Use chat_input for better UX
+        if prompt := st.chat_input("Type your message here..."):
+            handle_user_input(prompt)
+    else:
+        st.error("⚠️ Cannot send messages. API backend is not available.")
+        st.info("💡 Please start the FastAPI server first.")
+
+def handle_user_input(user_input: str):
+    """Handle user input and get agent response."""
+    # Add user message to session state
+    st.session_state.messages.append({
+        "role": "user", 
+        "content": user_input
+    })
+    
+    # Show user message immediately
+    st.markdown(f"""
+    <div class="chat-message user-message">
+        <strong>🧑 You:</strong><br>
+        {user_input}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Get agent response
+    with st.spinner("🤖 Agent is thinking..."):
+        response_data = send_message_to_api(user_input)
+    
+    if response_data:
+        assistant_response = response_data.get("response", "No response generated.")
+        
+        # Add to session state
         st.session_state.messages.append({
-            "role": "user", 
-            "content": user_input
+            "role": "assistant",
+            "content": assistant_response
         })
         
-        # Show user message immediately
+        # Display assistant response
         st.markdown(f"""
-        <div class="chat-message user-message">
-            <strong>🧑 You:</strong><br>
-            {user_input}
+        <div class="chat-message assistant-message">
+            <strong>🤖 Assistant:</strong><br>
+            {assistant_response}
         </div>
         """, unsafe_allow_html=True)
         
-        # Get agent response
-        with st.spinner("🤖 Agent is thinking..."):
-            response_data = self.send_message(user_input, settings["use_streaming"])
-        
-        if response_data:
-            assistant_message = {
-                "role": "assistant",
-                "content": response_data.get("response", "No response generated."),
-                "tools_used": response_data.get("tools_used", []),
-                "status": response_data.get("status", "unknown")
-            }
-            
-            # Add to session state
-            st.session_state.messages.append(assistant_message)
-            
-            # Display assistant response
-            st.markdown(f"""
-            <div class="chat-message assistant-message">
-                <strong>🤖 Assistant:</strong><br>
-                {assistant_message["content"]}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Show tools used
-            if assistant_message["tools_used"]:
-                tools_list = ", ".join(assistant_message["tools_used"])
-                st.markdown(f"""
-                <div class="tools-used">
-                    🛠️ <strong>Tools used:</strong> {tools_list}
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Force a rerun to update the interface
-        st.rerun()
+        # Show additional info if available
+        if response_data.get("tools_used"):
+            st.info(f"🛠️ Tools used: {', '.join(response_data['tools_used'])}")
     
-    def render_example_queries(self):
-        """Render example queries for users to try."""
-        with st.expander("💡 Example Queries to Try"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**🔍 Research & Analysis:**")
-                example_queries_1 = [
-                    "What are the latest trends in artificial intelligence?",
-                    "Research the current state of quantum computing",
-                    "Find information about sustainable energy solutions",
-                    "What are the recent developments in space exploration?"
-                ]
-                
-                for query in example_queries_1:
-                    if st.button(f"📝 {query}", key=f"example1_{hash(query)}"):
-                        st.session_state.example_query = query
-            
-            with col2:
-                st.markdown("**💡 General Questions:**")
-                example_queries_2 = [
-                    "Explain machine learning in simple terms",
-                    "How does blockchain technology work?",
-                    "What are the benefits of renewable energy?",
-                    "Compare different programming languages"
-                ]
-                
-                for query in example_queries_2:
-                    if st.button(f"📝 {query}", key=f"example2_{hash(query)}"):
-                        st.session_state.example_query = query
+    # Force a rerun to update the interface
+    st.rerun()
+
+def render_example_queries():
+    """Render example queries for users to try."""
+    with st.expander("💡 Example Queries to Try"):
+        col1, col2 = st.columns(2)
         
-        # Handle example query selection
-        if hasattr(st.session_state, 'example_query'):
-            settings = {
-                "use_streaming": True,
-                "temperature": 0.1,
-                "max_tokens": 2000,
-                "api_connected": self.check_api_status()
-            }
+        with col1:
+            st.markdown("**💬 Basic Conversations:**")
+            examples_1 = [
+                "Hello, how are you?",
+                "What can you help me with?",
+                "Tell me about yourself",
+                "How do you work?"
+            ]
             
-            if settings["api_connected"]:
-                self.handle_user_input(st.session_state.example_query, settings)
+            for example in examples_1:
+                if st.button(f"📝 {example}", key=f"ex1_{hash(example)}"):
+                    st.session_state.example_query = example
+        
+        with col2:
+            st.markdown("**🤔 Questions:**")
+            examples_2 = [
+                "Explain artificial intelligence",
+                "What is machine learning?",
+                "How do chatbots work?",
+                "Tell me a fun fact"
+            ]
             
-            # Clear the example query
-            delattr(st.session_state, 'example_query')
+            for example in examples_2:
+                if st.button(f"📝 {example}", key=f"ex2_{hash(example)}"):
+                    st.session_state.example_query = example
     
-    def run(self):
-        """Main application runner."""
-        # Render sidebar and get settings
-        settings = self.render_sidebar()
-        
-        # Render main chat interface
-        self.render_chat_interface(settings)
-        
-        # Render example queries
-        if not st.session_state.messages:
-            self.render_example_queries()
+    # Handle example query selection
+    if hasattr(st.session_state, 'example_query'):
+        handle_user_input(st.session_state.example_query)
+        # Clear the example query
+        delattr(st.session_state, 'example_query')
 
 def main():
-    """Main function to run the Streamlit app."""
-    app = AIAgentUI()
-    app.run()
+    """Main application runner."""
+    # Initialize session state
+    initialize_session_state()
+    
+    # Render sidebar and get API connection status
+    api_connected = render_sidebar()
+    
+    # Render main chat interface
+    render_chat_interface(api_connected)
+    
+    # Render example queries if no conversation exists
+    if not st.session_state.messages:
+        render_example_queries()
 
 if __name__ == "__main__":
     main()

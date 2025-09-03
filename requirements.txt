@@ -16,6 +16,7 @@ azure-identity==1.15.0
 
 # Data Processing
 pydantic>=2.7.4,<3.0.0
+pydantic-settings==2.1.0
 pandas==2.1.4
 numpy==1.26.4
 
